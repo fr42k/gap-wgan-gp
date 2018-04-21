@@ -31,6 +31,8 @@ CRITIC_ITERS = 5 # How many critic iterations per generator iteration
 BATCH_SIZE = 64 # Batch size
 ITERS = 200000 # How many generator iterations to train for
 OUTPUT_DIM = 3072 # Number of pixels in CIFAR10 (3*32*32)
+N = 10 # number of GANs
+K = 100 # per K times swap GANs
 
 
 class Generator(nn.Module):
@@ -90,25 +92,6 @@ class Discriminator(nn.Module):
         output = output.view(-1, 4*4*4*DIM)
         output = self.linear(output)
         return output
-
-netG = Generator()
-netD = Discriminator()
-
-use_cuda = torch.cuda.is_available()
-if use_cuda:
-    gpu = 0
-if use_cuda:
-    netD = netD.cuda(gpu)
-    netG = netG.cuda(gpu)
-
-one = torch.FloatTensor([1])
-mone = one * -1
-if use_cuda:
-    one = one.cuda(gpu)
-    mone = mone.cuda(gpu)
-
-optimizerD = optim.Adam(netD.parameters(), lr=1e-4, betas=(0.5, 0.9))
-optimizerG = optim.Adam(netG.parameters(), lr=1e-4, betas=(0.5, 0.9))
 
 def calc_gradient_penalty(netD, real_data, fake_data):
     alpha = torch.rand(BATCH_SIZE, 1)
@@ -173,75 +156,171 @@ preprocess = torchvision.transforms.Compose([
                                torchvision.transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
                            ])
 
+def rand_swap(mapping, nets, optims):
+    i = 0
+    j = len(mapping) - 1
+    while i < j:
+        while i < j and mapping[i] == "1":
+            i += 1
+        while i < j and mapping[j] == "0":
+            j -= 1
+        nets[i], nets[j] = nets[j], nets[i]
+        optims[i], optims[j] = optims[j], optims[i]
+        i += 1
+        j += 1
+
+def gen_mapping(n):
+    ones = n//2
+    remains = n - ones
+    candi = ('1' * ones) + ('0' * remains)
+    return permuteUnique(candi)
+
+def permuteUnique(candi):
+    ans = [[]]
+    for n in candi:
+        new_ans = []
+        for l in ans:
+            for i in xrange(len(l)+1):
+                new_ans.append(l[:i]+[n]+l[i:])
+                if i<len(l) and l[i]==n: break              #handles duplication
+        ans = new_ans
+    return ans
+
+
+rset = gen_mapping(N)
+
+#netG = Generator()
+#netD = Discriminator()
+
+netGs = [Generator() for i in xrange(N)]
+netDs = [Discriminator() for j in xrange(N)]
+
+use_cuda = torch.cuda.is_available()
+if use_cuda:
+    gpu = 0
+if use_cuda:
+    netDs = [netDs[i].cuda(gpu) for i in xrange(N)]
+    netGs = [netGs[i].cuda(gpu) for i in xrange(N)]
+
+one = torch.FloatTensor([1])
+mone = one * -1
+if use_cuda:
+    one = one.cuda(gpu)
+    mone = mone.cuda(gpu)
+
+optimizerDs = [optim.Adam(netDs[i].parameters(), lr=1e-4, betas=(0.5, 0.9)) for i in xrange(N)]
+optimizerGs = [optim.Adam(netGs[i].parameters(), lr=1e-4, betas=(0.5, 0.9)) for i in xrange(N)]
+
 for iteration in xrange(ITERS):
     start_time = time.time()
     ############################
     # (1) Update D network
     ###########################
-    for p in netD.parameters():  # reset requires_grad
-        p.requires_grad = True  # they are set to False below in netG update
+    epoch_data = []
+    s_D_cost = torch.FloatTensor([sys.maxint])
+    s_G_cost = torch.FloatTensor([sys.maxint])
+    s_D_real = torch.FloatTensor([sys.maxint])
+    s_D_fake = torch.FloatTensor([sys.maxint])
+    if use_cuda:
+        s_D_cost = s_D_cost.cuda(gpu)
+        s_G_cost = s_G_cost.cuda(gpu)
+        s_D_real = s_D_real.cuda(gpu)
+        s_D_fake = s_D_fake.cuda(gpu)
+    s_D_cost = autograd.Variable(s_D_cost)
+    s_G_cost = autograd.Variable(s_G_cost)
+    s_D_real = autograd.Variable(s_D_real)
+    s_D_fake = autograd.Variable(s_D_fake)
     for i in xrange(CRITIC_ITERS):
         _data = gen.next()
-        netD.zero_grad()
+        epoch_data.append(_data)
 
-        # train with real
-        _data = _data.reshape(BATCH_SIZE, 3, 32, 32).transpose(0, 2, 3, 1)
-        real_data = torch.stack([preprocess(item) for item in _data])
+    for i in xrange(N):
+        netD = netDs[i]
+        netG = netGs[i]
+        optimizerD = optimizerDs[i]
+        optimizerG = optimizerGs[i]
+        for p in netD.parameters():  # reset requires_grad
+            p.requires_grad = True  # they are set to False below in netG update
+        for i in xrange(CRITIC_ITERS):
+            _data = epoch_data[i]
+            netD.zero_grad()
 
-        if use_cuda:
-            real_data = real_data.cuda(gpu)
-        real_data_v = autograd.Variable(real_data)
+            # train with real
+            _data = _data.reshape(BATCH_SIZE, 3, 32, 32).transpose(0, 2, 3, 1)
+            real_data = torch.stack([preprocess(item) for item in _data])
 
-        # import torchvision
-        # filename = os.path.join("test_train_data", str(iteration) + str(i) + ".jpg")
-        # torchvision.utils.save_image(real_data, filename)
+            if use_cuda:
+                real_data = real_data.cuda(gpu)
+            real_data_v = autograd.Variable(real_data)
 
-        D_real = netD(real_data_v)
-        D_real = D_real.mean()
-        D_real.backward(mone)
+            # import torchvision
+            # filename = os.path.join("test_train_data", str(iteration) + str(i) + ".jpg")
+            # torchvision.utils.save_image(real_data, filename)
 
-        # train with fake
+            D_real = netD(real_data_v)
+            D_real = D_real.mean()
+            D_real.backward(mone)
+
+            # train with fake
+            noise = torch.randn(BATCH_SIZE, 128)
+            if use_cuda:
+                noise = noise.cuda(gpu)
+            noisev = autograd.Variable(noise, volatile=True)  # totally freeze netG
+            fake = autograd.Variable(netG(noisev).data)
+            inputv = fake
+            D_fake = netD(inputv)
+            D_fake = D_fake.mean()
+            D_fake.backward(one)
+
+            # train with gradient penalty
+            gradient_penalty = calc_gradient_penalty(netD, real_data_v.data, fake.data)
+            gradient_penalty.backward()
+
+            # print "gradien_penalty: ", gradient_penalty
+            # out_param
+            D_cost = D_fake - D_real + gradient_penalty
+
+            if (D_cost < s_D_cost).all():
+                # select best D here
+                s_D_cost = D_cost
+                s_D_real = D_real
+                s_D_fake = D_fake
+            Wasserstein_D = s_D_real - s_D_fake
+            # out_param
+            optimizerD.step()
+        ############################
+        # (2) Update G network
+        ###########################
+        for p in netD.parameters():
+            p.requires_grad = False  # to avoid computation
+        netG.zero_grad()
+
         noise = torch.randn(BATCH_SIZE, 128)
         if use_cuda:
             noise = noise.cuda(gpu)
-        noisev = autograd.Variable(noise, volatile=True)  # totally freeze netG
-        fake = autograd.Variable(netG(noisev).data)
-        inputv = fake
-        D_fake = netD(inputv)
-        D_fake = D_fake.mean()
-        D_fake.backward(one)
+        noisev = autograd.Variable(noise)
+        fake = netG(noisev)
+        G = netD(fake)
+        G = G.mean()
+        G.backward(mone)
+        # out_param
+        G_cost = -G
+        if (G_cost < s_G_cost).all():
+            # select best G here
+            s_G_cost = G_cost
+        # out_param
+        optimizerG.step()
 
-        # train with gradient penalty
-        gradient_penalty = calc_gradient_penalty(netD, real_data_v.data, fake.data)
-        gradient_penalty.backward()
+    if iteration % K == K - 1:
+        rdm = (int)(torch.randn(1).uniform_(0, len(rset)))
+        mapping = rset[rdm]
+        rand_swap(mapping, netDs, optimizerDs)
 
-        # print "gradien_penalty: ", gradient_penalty
-
-        D_cost = D_fake - D_real + gradient_penalty
-        Wasserstein_D = D_real - D_fake
-        optimizerD.step()
-    ############################
-    # (2) Update G network
-    ###########################
-    for p in netD.parameters():
-        p.requires_grad = False  # to avoid computation
-    netG.zero_grad()
-
-    noise = torch.randn(BATCH_SIZE, 128)
-    if use_cuda:
-        noise = noise.cuda(gpu)
-    noisev = autograd.Variable(noise)
-    fake = netG(noisev)
-    G = netD(fake)
-    G = G.mean()
-    G.backward(mone)
-    G_cost = -G
-    optimizerG.step()
 
     # Write logs and save samples
-    lib.plot.plot('./tmp/cifar10/train disc cost', D_cost.cpu().data.numpy())
+    lib.plot.plot('./tmp/cifar10/train disc cost', s_D_cost.cpu().data.numpy())
     lib.plot.plot('./tmp/cifar10/time', time.time() - start_time)
-    lib.plot.plot('./tmp/cifar10/train gen cost', G_cost.cpu().data.numpy())
+    lib.plot.plot('./tmp/cifar10/train gen cost', s_G_cost.cpu().data.numpy())
     lib.plot.plot('./tmp/cifar10/wasserstein distance', Wasserstein_D.cpu().data.numpy())
 
     # Calculate inception score every 1K iters
