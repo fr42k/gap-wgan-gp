@@ -158,6 +158,7 @@ preprocess = torchvision.transforms.Compose([
                            ])
 
 def rand_swap(mapping, nets, optims):
+    assert(len(mapping) > 0)
     i = 0
     j = len(mapping) - 1
     while i < j:
