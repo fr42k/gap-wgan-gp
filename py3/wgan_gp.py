@@ -169,7 +169,7 @@ def rand_swap(mapping, nets, optims):
         nets[i], nets[j] = nets[j], nets[i]
         optims[i], optims[j] = optims[j], optims[i]
         i += 1
-        j += 1
+        j -= 1
 
 def gen_mapping(n):
     ones = n//2
