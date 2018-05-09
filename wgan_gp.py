@@ -215,9 +215,6 @@ optimizerGs = [optim.Adam(netGs[i].parameters(), lr=1e-4, betas=(0.5, 0.9)) for 
 
 for iteration in xrange(ITERS):
     start_time = time.time()
-    ############################
-    # (1) Update D network
-    ###########################
     epoch_data = []
     s_D_cost = torch.FloatTensor([sys.maxint])
     s_G_cost = torch.FloatTensor([sys.maxint])
@@ -241,6 +238,9 @@ for iteration in xrange(ITERS):
         netG = netGs[i]
         optimizerD = optimizerDs[i]
         optimizerG = optimizerGs[i]
+        ############################
+        # (1) Update D network
+        ###########################
         for p in netD.parameters():  # reset requires_grad
             p.requires_grad = True  # they are set to False below in netG update
         for i in xrange(CRITIC_ITERS):
